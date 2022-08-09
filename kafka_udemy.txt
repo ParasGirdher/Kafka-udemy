@@ -1,0 +1,913 @@
+Topics: A particular stream of data
+
+1. Similar to a table in the DB (without all the constraints)
+2. You can have as may Topics as you want.
+3. A Topic is defined by its name.
+
+Topics are split in partition
+1. Each partiiton is ordered.
+2. Each message within partition gets an incremental id, called offset.
+
+			Partition 0 {0,1,2,3,4,5,6,7,8}
+Kafka Topic		Partion 1 {0,1,2}
+			Partition 2 {0,1,2,3,4,5}
+
+Offset only have a meaning for a specific partition. eg: offset 3 in partition 0 doesn't represent the same data as offset 3 in partition 1
+Order is guaranteed only within a partition (not across partitions)
+Data is kept only for a limited time (default is one week)
+Once the data is written to a partition, it can't be changed (immutability)
+Data is assigned randomly to a partition unless a key is provided.
+
+
+Brokers
+
+1. A Kafka cluster is composed of multiple brokers (servers)
+2. Each broker is identified with it's id (integer)
+3. Each broker contains certain Topic partitions.
+4. After connecting to any broker (called a bootstrap brooker), you will be connected to the entire cluster.
+5. A good number to get started is 3 brokers, but some big clusters have over 100 brokers.
+
+In this example we choose to number brokersstarting at 100 (arbitrary)
+
+Ex of Topic-A with 3 partitions
+Ex of Topic-B with 2 partitions
+
+Broker 101			Broker 102			Broker 103
+Topic-A				Topic-A				Topic-A
+Partition 0			Partition 2			Partition 1
+
+Topic-B				Topic-B
+Partition 1			Partition 0
+
+Note: Data is distributed and Broker 103 doesn't have any Topic B data.
+
+
+
+Topic replication factor:
+1. Topic should have a replication factor >1 (usually between 2 & 3)
+2. This way if a broker is down, other broker can serve the data
+3. Example Topic-A with 2 partitions and replication factor of 2
+
+Broker 101 			Broker 102			Broker 103
+Partition 0			Partition 1			Partition 1
+Topic-A				Topic-A				Topic-A
+					Partition 0
+					Topic-A
+Thus, If we lost Broker 102, Broker 101 & 103 can still serve the data.
+
+
+1. At any time only ONE broker can be a leader for a given partition
+2. Only that leader can receive and serve data for a partition.
+3. The other brokers will synchronize the data.
+4. Therefore each partition has one leader and multiple ISR (in-sync-replica)
+5. The leader & ISR is being determined by Zookeeper.
+
+
+
+Producers:
+1. Producers write data to Topics (which is made of Partitions)
+2. Producers automatically know to which broker and partition to write to
+3. In case of broker failures, Producers will automatically recover.
+
+Producers can choose to receive the acknowledgement of data writes:
+1. acks=0: Producer won't wait for the acknowledgement (possible data loss)
+2. acks=1: Producer will wait for leader acknowledgement (limited data loss)
+3. acks=all: Leader + replicas acknowledgement (no data loss)
+
+1. producers can choose a key to send with the message (string, number, etc.)
+2. if key=null, data is sent round robin (broker 101 then 102 then 103)
+3. If a key is sent, then all messages for that key will always go to the same partition
+4. A key is basically sent if you need message ordering for a specified field (ex: truck_id)
+
+(Advanced: we get this gurantee thanks to key hashing, which depends on the number of positions)
+
+			Broker 101
+			Topic-A/Partition 0
+Producer   --Send Data--
+			Broker 102
+			Topic-A/ Partition 1 
+
+
+Consumers:
+1. Consumers read data from a topic (identified by name)
+2. Consumers know which broker to read from
+3. In case of broker failures, consumers know how to recover.
+4. Data is read in order within each partiiton.
+
+			Broker 101		---Read in order------	Consumer1
+			Topic-A/Partition 0
+
+			Broker 102		---Read in order------	Consumer2
+			Topic-A/ Partition 1 
+
+			Broker 102		---Read in order------	Consumer2
+			Topic-A/ Partition 2 
+
+
+1. Consumers read data in consumer groups.
+2. Each consumer within a group reads from exclusive partitions
+3. If you have more consumers than partitions, some consumers will be inactive.
+
+	Topic-A/Partition 0					Topic-A/Partition 1		Topic-A/Partition 2
+
+	Consumer 1 (ConsumerGroup 1)	Consumer 2(ConsumerGroup 1)	Consumer 2(ConsumerGroup 1)
+	Consumer 1 (ConsumerGroup 2)	Consumer 2(ConsumerGroup 2)	Consumer 3(ConsumerGroup 2)		Consumer 4(ConsumerGroup 2) (inactive)
+	Consumer 1 (ConsumerGroup 3)	Consumer 1(ConsumerGroup 3)	Consumer 1(ConsumerGroup 3)
+
+Note: Consumers will automatically use a GroupCoordinator and a ConsumerCoordinator to assign to a consumers to a partition.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Consumer Offsets:
+
+1. Kafka stores the offsets at which a consmer group has been reading.
+2. The offsets committed live in a Kafka topic named "_consumer_offsets"
+3. When a consumer in a group has processed data received from Kafka, it should be committing the offsets
+4. If a consumer dies, it will be able to read back from where it left off thanks to the committed consumer offset!
+
+Consumer from Consumer Group ----------------> Committed offset |
+						Reads	<----------------4 5 6 7 8 9 10 | 11 12 13
+															    |
+
+Delivery semantics for Consumers
+1. Consumers choose when to commit offsets.
+2. There are 3 delivery semantics:
+
+1. At most once:
+offsets are committed as soon as the message is received.
+If the process goes wrong, the message will be lost (it won't be read again)
+
+2. At least once (usually preferred)
+offsets are committed after the message is processed
+If the processing goes wrong, the message will be read again
+This can result in duplicate processing of messages. Make sure your processing is idempotent (i.e. processing again the messages won't impact your systems)
+
+Exactly once:
+Can be achieved for Kafka => Kafka workflows using Kafka Streams API (maybe can be achieved using Spark & other stuff)
+For Kafka =>External System workflows, use an idempotenant consuer.
+
+
+
+Kafka Broker Discovery
+1. Every Kafka Broker is also called a "bootstrap server"
+2. That means you only need to connect to one broker, and you will be connected to the entire cluster
+3. Each broker knows about all the other brokers, topics and partitions (metadata)
+
+
+Kafka Client			1. Connection + Metadata request ------------->    Kafka CLuster {Broker 101,Broker 102,Broker 103}
+(Producer/Consumer)		2. List of all brokers <-----------------------		{Broker 104,Broker 105}
+				3. Can connect to the needed brokers
+
+
+
+Zookeeper
+Zookeeper manages brokers (keeps a list of them)
+Zookeeper helps in performing leader election for partitions
+Zookeeper sends notifications to kafka in case of changes (e.g. new topic, broker dies, broker comes, delete topics, etc..)
+Kafka can't work without zookeeper
+Zookeeper by design operates with an odd number of servers (3,5,7)
+Zookeeper has a leader (handle writes) the rest of the servers are followers (handle reads)
+Zookeeper does NOT store consumer offsets with Kafka >v0.10
+
+                Zookeeper					Zookeeper			Zookeeper
+                Server 1					Server 2			Server 3
+                (Follower)					(Leader)			(Follower)
+
+Kafka (Broker 1)	Kafka (Broker 2)	Kafka (Broker 3)	Kafka (Broker 4)	Kafka (Broker 5)
+
+
+
+
+Kafka Gurantees
+
+Messages are appended to a topic-partition in the order they are sent.
+Consumers read messages in the order stored in a topic-partition.
+With a replication factor of N, producers and consumers can tolerate upto N-1 brokers being down.
+This is why a replication factor of 3 is a good idea:
+Allows for one broker to be taken down for maintaince.
+Allows for another broker to be taken down unexpectedly.
+As long as the number of partitions remains constant for a topic (no new partitions), the same key will always go to the same partition.
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+kafka-topics.bat
+zookeeper-server-start.bat config\zookeeper.properties
+kafka-server-start.bat config\server.properties 
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+To create a Topic:
+kafka-topics.bat --zookeeper 127.0.0.1:2181 --topic first_topic --create --partitions 3 --replication-factor 1
+To get the list of Topics:
+kafka-topics.bat --zookeeper 127.0.0.1:2181 --list
+To delete a Topic
+kafka-topics.bat --zookeeper 127.0.0.1:2181 --topic first_topic --delete
+To describe a topic
+kafka-topics.bat --zookeeper 127.0.0.1:2181 --topic first_topic --describe
+
+To produce a message to a topic
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic first_topic
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic first_topic --producer-property acks=all
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic second_topic  (in this case this new topic will be created with zero partition.)
+(You need to update server.properties file to change the bydefault partition number)
+
+How to consume topic:
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --from-beginning
+
+How to read data by a consumer using a consumer group
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --group my-first-application
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --group my-first-application --from-beginning 
+(from beginning meaans from that point where the offset has already been set for that particular group)
+
+
+To list down consumer groups
+kafka-consumer-groups --bootstrap-server localhost:9092 --list
+To describe a consumer group
+kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group my-first-application
+
+
+Resetting offsets
+kafka-consumer-groups --bootstrap-server localhost:9092 --group my-first-application --reset-offsets --to-earliest --execute --topic first_topic
+kafka-consumer-groups --bootstrap-server localhost:9092 --group my-first-application --reset-offsets --shift-by-2 --execute --topic first_topic
+
+
+Producer with keys
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic first_topic --property parse.key=true --property key.separator=,
+> key,value
+> another key,another value
+
+Consumer with keys
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --from-beginning --property print.key=true --property key.separator=,
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+min.insync.replicas=2
+If there are 3 brokers, 1 is leader & other 2 are replicas for a partition, and acks=all is configured, then it it can tolerate one broker going down only.
+
+Producers Retries
+1. In case of transient failures, developers are expected to handle exceptions, othrwise data will be lost.
+Example of transient failure:
+Not enough ReplicasException
+
+There is a "retries" setting
+defaults to 0 for Kafka<=2.0
+defaults to Integer.MAX_VALUE for kafka>=2.1
+
+The "retry.backoff.ms" setting is bydefault 100ms.
+
+if retries>0, the producer won't try the request for ever, it's bounded by a timeout.
+For this, you can set an intutive Producer Timeout (KIP-91-Kafka 2.1)
+delivery.timeout.ms=120 000 ms==2 minutes
+
+Records will be failed if they can't be acknowledged in delivery.timeout.ms
+
+In case of retries, there is a chance that messages will be sent out of order (if a batch has failed to sent) 
+If you rely on key-based ordering, that can be an issue.
+
+For this you can set the setting which controls how many produce requests can be made in parallel: 
+max.in.flight.requests.per.connection 
+Default: 5
+Set it to 1 if you need to ensure ordering (may impact throughput)
+
+In Kafka>=1.0.0, there's a better solution with idempotent producers!
+Idempotent Producer:
+
+Here's the problem: the Producer can introduce duplicate messages in Kafka due to network errors.
+
+1. Producer--------------------produce---------------------->Kafka (2. commit)
+                (Network error)<--------3. acks-------------
+4. Producer retriies----------produce------------------------>Kafka (commit) (duplicacy occured)
+                    <-----------------------acks------------
+
+
+In kafka>=0.11, you can define an "idempotent producer" which won't introduce duplicates on network error. (it has a produce request id)
+
+1. Producer (>-0.11)--------------------produce---------------------->Kafka (2. commit)
+                	(Network error)<--------3. acks-------------
+4. Producer retriies------------retry produce---------------------->Kafka (detect duplicate, don't commit twice)
+                    <----------------------------acks---------------
+
+Idempotent producers are great to gurantee a stable and safe pipeline
+They come with:
+retries=Integer.MAX_VALUE(2^31-1)
+max.in.flight.requests=1(kafka=0.11)or
+max.in.flight.requests=5(kafka>=1.0-higher performance & keep ordering)
+acks=all
+
+These settings are applied automatically after your producer has started if you don't set them manually. 
+(However it's better to set them manually through code).
+
+
+To make your producer idempotent, just set: 
+producerProps.put("enable.idempotence",true);
+
+Kafka>=0.11
+enable.idempotence=true (producer level)+min.insync.replicas=2 (broker/topic level)
+implies acks=all, retries=MAX_INT, max.in.flight.requests.per.connection=1 if Kafka 0.11 or 5 if kafka>=1.0
+while keeping ordering gurantees and improving performance!
+
+Running a "safe producer" might impact throughput and latency, always test for your usecase.
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Message Compression:
+
+Producer usually send data that is text-based, for example with JSON data
+In this case, it is important to apply compression to the producer.
+
+Compression is enabled at the Producer level and doesn't require any configuration change in the Broker or in the Consumers.
+"compression.type" can be 'none' (default),'gzip','lz4','snappy'
+
+Compression is more effective the bigger the batch of message being sent to Kafka!
+
+Advantages:
+The compressed batch has the following advantage:
+Much smaller producer request size (compression ratio up to 4x!)
+Faster to transfer data over the network => less latency
+Better throughput
+Better disk utilization in kafka (stored message on disk are smaller)
+
+Disadvantages (very minor):
+Producers must commit some CPU cycles to compression.
+Consumers must commit some CPU cycles to decompression.
+
+Overall:
+Consider testing snappy or lz4 for optimal speed/compression ratio. (Snappy is very helpful if your messages are JSON/text based)(eg: Log lines or JSON documents)
+Snappy has a good balance of CPU/compression ratio.
+Always use compression in production and especially if you have high throughput.
+Consider tweaking linger.ms and batch.size to have bigger batches , and therefore more compression and higher throughput.
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Linger.ms & batch.size
+
+By default, Kafka tries to send records as soon as possible.
+It will have up to 5 requests in flight, meaning up to 5 messages individually sent at the same time.
+After this if more messages have to be sent while others are in flight, Kafka is smart and will start batching them while they wait to send them all at once.
+
+This small batching allows Kafka to increase throughput while maintaing very low latency.
+Batches have higher compression ratio so better efficiency.
+
+Linger.ms: Number of milliseconds a producer is willing to wait before sending a batch out. (default 0)
+By introucing some lag (for ex: linger.ms=5), we increase the chances of messages being together in a batch.
+So at the expense of introducing a small delay, we can increase throughput, compression and efficiency of our producer.
+If a batch is full (see batch.size) before the end of the linger.ms period, it will be sent to kafka right away. 
+
+batch.size: Maximum number of bytes that will be included in a batch. The defult is 16KB.
+
+Increasing a batch size to something like 32KB or 64KB can help increasing the compression, throughput, and efficiency of requests.
+Any message that is bigger than the batch size will not be batched.
+A batch is allocated per partition, so make sure that you don't see it to a number that's too high, otherwise you will run waste memory!
+(Note: You can monitor the average batch size metric using Kafka Producer Metrics).
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Producer Default Partitioning and how keys are hashed:
+
+By defaults, your keys are hashed using the "murmur2" algorithm.
+It is most likely preferred to not override behavior of the partitioner, but it is possible to do so. (partitioner.class)
+
+The target partition formula is:
+=Utils.abs(Utils.murmur2(record.key()))%numPartitions;
+
+This means, same key will go to the same partition, and adding partitions to a topic will alter the formulae. 
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Max.block.ms & buffer.memory
+
+If the producer produces faster than the broker can take, the records will be buffered in the memory.
+buffered.memory=32MB (the size of the send buffer)
+That buffer will fill up over time and fill back down when the throughput to the broker increases.
+
+If the buffer is full (all 32MB), then the .send() method will start to block (won't return right away)
+
+max.block.ms=60000 
+The time the .send() will block until throwing an exception. 
+Exceptions are basically thrown when:
+1. The producer has filled up it's buffer
+2. The broker is not accepting any new data
+3. 60 seconds has elapsed.
+
+If you hit an exception hit that usually means your brokers are down or overloaded as they can't respond to the requests.
+
+ 
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+By default, Consumer is configured as atleastonce (no data loss) but system needs to be idempotenant for this.
+
+
+Consumer Poll Behaviour:
+1. Kafka Consumers have a "poll" model, while many other messaging bus in enterprises have a "push" model.
+2. This  allows consumers to control where in the log they want to consume, how fast, and gives them the ability to replay events.
+
+			
+	   .poll(duration timeout)
+Consumer	--------->		Broker
+		    <---------		
+	  (Return data immediately if possible
+		 Return empty after "timeout")
+
+Fetch.min.bytes (default 1):
+1. Controls how much data you want to pull at least on each request
+2. Helps increasing throughput and decreasing request number
+3. At the cost of latency.
+
+
+Max.poll.records (default 500):
+1. Controls how many records to receive per poll request.
+2. Increase if your messages are very small and have a lot of available RAM.
+3. Good to monitor how many records are polled per request.
+
+
+Max.partitions.fetch.bytes (default 1MB):
+1. Maximum data returned by the broker per partition.
+2. If you read from 100 partitions, you will need a lot of memory (RAM).
+
+Fetch.max.bytes (default 50MB)
+1. Maximum data returned for each fetch request (covers multiple partitions)
+2. The consumer performs multiple fetches in parallel
+
+Change these settings only if your consumer maxes out on throughput already.
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+Consumer offset Commits Strategies
+1. There are 2 most common patterns for commiting offsets in a consumer application.
+
+2 Strategies
+1. (easy) enable.auto.commit=true & syncronous processing of batches.
+2. (medium) enable.auto.commit=false & manual commit of offsets
+
+In the first strategy: With auto commits, offsets will be commited automatically for you at regular interval (auto.commit.interval.ms=5000 by default)
+every time you call .poll()
+If you don't use syncronous processing, you will be in "at-most-once" behavior because offsets will be committed before your data is processed.
+
+
+enable.auto.commit=false & syncronous processing of batches:  (consumer.commitsync())
+You control when you commit offsets and what's the condition for commiting them.
+Example: accumulationg records into a buffer and then flushing the buffer to a database +commiting offsets then.
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+Consumer Offset Reset Behaviour
+1. A consumer is expected to read from a log continously.
+But if your application has a bug, your consumer can be down.
+If Kafka has a retention of 7 days, and your consumer is down for more than 7 days, the offsets are "invalid".
+
+The behavior for the consumer is to then use:
+auto.offset.reset=latest:will read from the end of the log
+auto.offset.reset=earliest: will read from the start of the log
+auto.offset.reset=none: will throw exception if no offset is found.
+
+
+Additionally, consumer offsets can be lost:
+If a consumer hasn't read new data in 1day (Kafka <2.0) 
+If a consumer hasn't read new data in 1day (Kafka >=2.0) 
+
+This can be controlled by the broker setting offset.retention.minutes
+
+
+
+Replaying data for Consumers
+To replay data for a consumer group:
+1. Take all the consumers from a specific group down.
+2. Use Kafka-consumers-groups command to set offset to what you want.
+3. Restart consumers
+
+Bottom line:
+Set proper data retention period & offset retention period.
+Ensure the auto offset reset behavior is the one you expect/want
+Use replay capability in case of unexpected behavior.
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+ 
+Controlling Consumer Liveliness
+1. Consumer in a group talks to Consumer Groups Coordinator
+2. To detect consumers that are "down", there is a heartbeat mechanism and a poll mechanism.
+3. To avoid issue, consumers are encouraged to process data fast & poll often.
+
+Consumer Hearbeat Thread:
+Session.timeout.ms (default 10ms)
+1. Hearbeat are sent periodically to the broker.
+2. If no hearbeat is sent during that period, the consumer is considered dead.
+3. Set even to lower to faster consume rebalances.
+
+
+Hearbeat.interval.ms (default 3 seconds):
+1. How often to send heartbeats
+2. Usually set to 1/3rd of the session.timeout.ms
+Take-away: This mechanism is used to detect a consumer application being down.
+
+
+Consumer Poll Thread:
+max.poll.interval.ms (default 5 minutes):
+1. Maximum amount of time between two .poll() calls before declaring the consumer dead.
+2. This is particulary relevant for big data frameworks like Spark in case the processing takes time.
+Take-away: This mechanism is used to detect a data processing issue with the consumer.
+
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+Kafka-Connect-High level
+1. Source Connectors to get data from Common Data Sources
+2. Sink Connector to publish that data in Common Data Stores
+3. Make it easy for non-experienced dev to quickly get their data reliably into Kafka
+4. Part of your ETL pipeline
+5. Scaling made easy from small pipelines to company-wide pipelines
+6. Re-usable code
+
+
+Google: Kafka connect confluent
+https://github.com/jcustenborder/kafka-connect-twitter
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+Kafka Stream Introduction:
+
+Easy data prrocessing and transformation library within kafka
+1. Standard Java application
+2. No need to create a seprate cluster
+3. Highly scalable, elastic & fault tolerance
+4. Exactly once capabilities
+5. One record at a time processing (no batching)
+6. Works for any application size
+
+It's a serious contendar to other processing frameworks such as Apache Spark, Flink or Nifi.
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+Schema Registry
+
+The need for a schema registry:
+1. What if the producer sends bad data?
+2. What if a field gets renamed?
+3. What if a data format changes from one day to another?
+
+The consumer break!!!
+
+1. We need data to be self descriable
+2. We need to be able to evolve data without breaking downstream consumers.
+3. We need schemas...and a schema registry!
+
+
+As kafka doesn't even know your data type, it takes bytes as input and distributes bytes.
+
+Thus Schema registry has to be a seprate components.
+Producers and consumers need to be able to talk to it.
+The Schema Registry must be able to reject bad data
+A common data format must be agreed upon
+1. It needs to support schemas
+2. It needs to support eveolution
+3. It needs to be lightweight
+
+Solution: Confluent Schema Registry (And Apache Avro as the data format)
+
+
+Confluent Schema Registry Purpose
+1. Store & retrieves schemas for Producers/Consumers
+2. Enforce Backward/Forward/ Full compatibilty on topics
+3. Decrease the size of the payload of data sent to Kafka
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+Partitions Count, Replication Factor
+1. These are 2 important parameters when creating a topic.
+2. They impact performance and durability of the system overall.
+
+It is best to get parameter right at the first time!
+If the partition count increases during a topic lifecycle, you will break your keys ordering gurantees.
+If the replication factor increases during a topic lifecycle, you put more pressure on your cluster, which can lead to unexpected performance decrease.
+
+Partitions Count:
+1. Each partition can handle a throughput of a few MB/s (measure it for your setup)
+2. More partition implies:
+Better parallelism, better throughput
+Ability to run more consumers in a group to scale
+Ability to levrage more brokers if you have a large cluster
+But more elections to perform for zookeeper
+But more files opened on kafka
+
+Guidelines:
+1. Partitions per topic= MILLION DOLLAR QUESTION
+(Intitution): Small cluster (<6 brokers): 2*#brokers
+(Intitution): Big cluster (>12brokers)1*#broker
+Adjust for number of consumers you need to run in parallel at peak throughput
+Adjust for producer throughput (increase if super-high throughput or projected increase in the next 2 years)
+TEST! Every Kafka Cluster will have different performance
+Don't create a topic with 100 partitions!
+
+Replication Factor:
+1. Should be atleast 2, usually 3, maximum 4
+2. The higher the replication factor (N):
+Better resilience of your system (N-1 brokers can fail)
+But more replication (higher latency acks=all)
+But more disk space on your system (50% more if RF is 3 instead of 2)
+
+Guidelines:
+1. Set it to 3 to get started (you must have atleast 3 brokers for that)
+2. If replication performance is an issue, get a better broker instead of less RF
+Never set it to 1 in production
+
+
+Clusters guidelines:
+It is pretty much accepted that a broker should not hold more than 2000 to 4000 partitions (across all topics of that broker).
+Additionally, a Kafka cluster should have a maximum of 20,000 partitions across all brokers.
+The reason is that is in case of broker going down, Zookeeper needs to perform a lot of leader elections.
+If you need more partitions in your cluster, add broker instead.
+If you need more than 20,000 partitions in your cluster(it will take time to get there!), follow the Netflix model and create more Kafka clusters.
+Overall, you don't need a topic with more than 1000 partitions to achieve high throughput. Start at a reasonalbe number and test the performance.
+
+------------------------------------------------------------------------------------------------------------------------------------
+Kafka Cluster Setup (High level architecture)
+
+1. You want multiple brokers in different data centers (racks) to distribute your load. You also want a cluster of at least 3 zookeeper.
+2. In AWS (or can be setup on azure cloud or on primise):
+
+zookeeper1	zookeeper2	zookeeper3
+Broker 1	Broker 2	Broker 3
+Broker 4	Broker 5	Broker 6
+
+You want to isolate each Zookeeper & Broker on seprate servers.
+Monitoring needs to be implemented
+Operations have to be mastered
+You need a really good Kafka Admin
+
+Alternative: many different "Kafka as a Service" offerings on the web
+No operational burdens (updates, monitoring, setup, etc..)
+------------------------------------------------------------------------------------------------------------------------------------
+The need for encryption, authentication & authorization in Kafka
+
+1. Currently any client can access your Kafka cluster (authentication)
+2. The client can publish/consume any topic data (authorization)
+3. All the data being sent is fully visible on the network (encryption)
+
+Someone could intercept data being sent
+Someone could publish bad data/steal data
+Someone could delete topics
+
+All these reasons push for more security and an authentication model.
+
+Encryption:
+Encryption in Kafka ensures that the data exchanged between clients and brokers is secret to routers on the way.
+This is similar concept to an https website.
+
+Kafka Client------------------------------------>U:admin------------------------------------>Kafka Brokers
+(producer/consumer)----------------------------->P: supersecret	---------------------------->Port 9092 -PLAINTEXT
+
+Kafka Client------------------------------------>ENcrpted data------------------------------------>Kafka Broker
+(producer/consumer)										Port 9093 -PLAINTEXT
+
+Authentication in Kafka
+1. Authentication in Kafka ensures that only clients that can prove their identity can connect to our Kafka Cluster.
+This is similar concept to a login (username/password).
+
+Authentication in kafka can take a few forms 
+1. SSL authentication: client autneticate to Kafka using SSL certifcates.
+		
+SASL Authentication:
+1. PLAIN: clients authenticate using username/password (weak-easy to setup)
+2. Kerberos: such as Microsoft Active Directory (strong-hard to setup)
+3. SCRAM: username/password (strong-medium to setup)
+
+1. Once a client is authenticated, Kafka can verify its identity
+2. It still needs to be combined with authorization, so that Kafka knows that:
+"User alice can view topic finance"
+"User bob cannot view topic trucks"
+
+ACL(Access Control Lists) have to be maintained by administration and onboard new users.
+------------------------------------------------------------------------------------------------------------------------------------
+Kafka MultiCluster + Replication
+
+Kafka can only operate well in a single region.
+Therefore, it is very common for enterprises to have Kafka clusters across the world, with some level of replication between them.
+
+There are different tools to perform it.
+Mirror maker -open source tool that ships with kafka
+Netflix uses Flink: they wrote their own application
+Uber uses ureplicator - address performance and operations issues with MM
+
+Active => Active
+1. You have a global application
+2. You have a global dataset
+
+Active => Passive
+1. You want to have an aggregation cluster
+2. You want to create some form of disater recovery strategy (its hard)
+3. Cloud migration (from on primise cluster to Cloud cluster)
+
+Replicating doesn't preserves offsets, just data!
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+Partitions & Segments
+1. Topics are made of partiitons (we already know that)
+2. Partitions are made of segments (files)!
+
+Segment 0 		Segment 1		Segment 2		Segment 3
+Offset (0-957)		Offset (958-1675)	Offset (1676-2453)	Offset (2454-?)
+									(Ative writes)
+					Partition
+
+Only one segment is active (the one data is being written to)
+
+Two segment settings:
+log.segment.bytes: the max size of a single segment in bytes
+log.segment.ms: the time kafka will wait before commiting the segment if not full (by default: 1 week)
+
+Segments come with two indexes (files):
+1. An offset to a position index: allows Kafka where to read to find a message
+2. A timestamp to offset index: allows kafka to find messages with a timestamp
+
+Therefore, Kafka knows where to find data in a constant time!
+
+
+Segments: Why should I care?
+
+1. A smaller log.segment.bytes (size, default: 1 GB) means:
+More segments per partitions
+Log compaction happens more often
+But Kafka has to read more files opened (Error: Too many open files)
+Ask yourself: how fast will I have new segments based on throughput?
+
+2. A smaller log.segment.ms (time, default 1 week) means:
+You set a max frequency for log compaction (more frequent triggers)
+Maybe you want daily compaction instead of weekly?
+Ask yourself: How often do I need log compaction to happen?
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+Log Cleanup Policies
+
+1. Many Kafka clusters make data expire, according to a policy
+2. That concept is called log cleanup
+
+Policy 1: log.cleanup.policy=delete (Kafka default for all user topics)
+1. Delete based on age of data (default is week)
+2. Delete based on max size of log (default is -1==infinite)
+
+Policy 2: log.cleanup.policy=compact (Kafka default for topic_consumer_offsets)
+1. Delete based on keys of your messages
+2. Will delete old duplicate keys after the active segment is commited
+Infinite time & space retention
+
+
+Log Cleanup Why & When?
+
+Deleting data from Kafka allows you to:
+1. Control the size of the data on the disk, delete obsolete data
+2. Overall: Limit maintaince work on the Kafka Cluster
+
+How often does log cleanup happen
+1. Log cleanup happens on your partition segments!
+2. Smaller/More segments means that log cleanup will happen more often!
+3. Log cleanup shouldn't happen too often => takes CPU and RAM resources.
+4. The cleaner checks for work every 15 seconds (log.cleaner.backoff.ms)
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+Log Cleanup Policy: Delete
+
+log.retention.hours: 
+1. no of hours to keep the data for( default 168 hours -1 week)
+2. Higher number means more disk space
+3. Lower number means that less data is retained (if your consumers are down for too long, they can miss data)
+
+log.retention.bytes:
+1. Max size in Bytes for each partition (default is -1 -infinite)
+2. Useful to keep the size of a log under a threshold.
+
+
+Usecases - two common pair of options:
+1. One week of retention:
+log.retention.hours=168 & log.retention. bytes=-1
+
+Infinite time retention bounded by 500MB:
+log.retention.hours=17520 and log.retention.bytes=524288000
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+uncear.leader.election
+
+1. If all your in Sync replica die (but you still have out of sync replicas up), you have the following option:
+Wait fro an ISR to come back online (default)
+Enable unclean.leader.election=true and start producing to non ISR partitions.
+
+If you enable unclean.leader.election=true, you improve availability, but you will lose data because other messages on ISR will be discarded.
+Overall this is a very dangerous setting and its implication must be understood fully before enabling it.
+
+Usecases include: metric collection, log collection, and other cases where data loss is somewhat acceptable, at the trade-off of availability.
+
+------------------------------------------------------------------------------------------------------------------------------------
+What do I set for advertised.listeners?
+
+1. If your clients are on your private network, set either:
+internal private Ip
+the internal private DNS hostname
+
+Your clients should be able to resolve the internal IP or hostname
+
+
+2. If your client are on a public network, set either:
+The external public IP
+The external public DNS hostname pointing to the Public IP
+
+Your clients must be able to resolve the public DNS
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+Elasticsearch
+
+Get: /_cat/indices?v
+Put: /twitter
+
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+				
+			
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+IjCd4IWgGMXAHnyx7vUF2NxKz
+V40tMEqqoaNfZMNH9dSg73JOpYlIYuqTOiYA1oXeWERB0bYFIA
+AAAAAAAAAAAAAAAAAAAAAOZFWwEAAAAA1pYbp1xyvaQ%2BX3xOXSDUKWoOXhE%3DhLS9zgRDH0vqFDpaYufE8SV1EIc2D1dVOSRW5Bl7hJQgBBmxmz
+620762946-N58DsTGaQUykUGUoVILc9zusgIEvnVGVYZApJAFj
+cbSbRXme0tuZgWu6KNlIYF6GMg4l2AVRuQ6rxPHctN7ep
+
+				
+
